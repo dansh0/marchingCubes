@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OBJ Viewer - Hot Reload</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #1a1a1a;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+        
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            z-index: 100;
+            max-width: 300px;
+        }
+        /* Simple GUI styling */
+        .gui {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        .gui-row {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .gui label {
+            font-size: 12px;
+            color: #bbb;
+            margin-bottom: 2px;
+        }
+        .gui select {
+            background: rgba(255,255,255,0.08);
+            color: #eee;
+            border: 1px solid rgba(255,255,255,0.15);
+            padding: 6px 8px;
+            border-radius: 4px;
+            outline: none;
+        }
+
+        .gui option {
+            background: rgba(255,255,255,0.08);
+            color: #0f0f0f;
+            border: 1px solid rgba(255,255,255,0.15);
+            padding: 6px 8px;
+            border-radius: 4px;
+        }
+        .gui button {
+            background: rgba(255,255,255,0.08);
+            color: #eee;
+            border: 1px solid rgba(255,255,255,0.15);
+            padding: 6px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 120ms ease, border-color 120ms ease;
+        }
+        .gui button:hover {
+            background: rgba(255,255,255,0.14);
+            border-color: rgba(255,255,255,0.25);
+        }
+        
+        #status {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: #00ff00;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 100;
+        }
+        
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 100;
+        }
+        
+        .loading {
+            color: #ffaa00;
+        }
+        
+        .error {
+            color: #ff4444;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="info">
+            <div>Mesh Viewer</div>
+            <div id="mesh-info">Loading...</div>
+            <div class="gui">
+                <label for="model-select">Model</label>
+                <select id="model-select">
+                </select>
+                <div style="height:8px;"></div>
+                <label for="paint-select">Paint</label>
+                <select id="paint-select">
+                    <option selected value="color">color</option>
+                    <option value="normal">normal</option>
+                    <option value="tri">tri</option>
+                </select>
+                <div style="height:8px;"></div>
+                <label for="level-scalar">Level Scalar</label>
+                <select id="level-scalar">
+                    <option selected value=0>Regular</option>
+                    <option value=0.05>Bloated</option>
+                    <option value=-0.01>Shrunk</option>
+                </select>
+                <div class="gui-row" style="margin-top:10px;">
+                    <button id="btn-rot-x" type="button">ROTATE X</button>
+                    <button id="btn-rot-y" type="button">ROTATE Y</button>
+                    <button id="btn-rot-z" type="button">ROTATE Z</button>
+                </div>
+            </div>
+        </div>
+        
+        <div id="status">
+            <div id="connection-status">Connecting...</div>
+            <div id="reload-status"></div>
+        </div>
+        
+        <div id="controls">
+            <div>Controls:</div>
+            <div>• Left click + drag: Rotate</div>
+            <div>• Left click + ctrl + drag: Pan</div>
+            <div>• Scroll: Zoom</div>
+            <div>• R: Reset view</div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    
+    <script>
+
+        // get the model list
+        const getModelList = async () => {
+            const response = await fetch('/api/model_list');
+            const data = await response.json();
+            console.log('Model list: ', data);
+            // get all current list of models
+            const modelSelect = document.getElementById('model-select');
+            const currentModelValues = Array.from(modelSelect.options).map(opt => opt.value);
+            console.log('Current models: ', currentModelValues);
+            data.forEach(model => {
+                if (!currentModelValues.includes(model)) {
+                    const option = document.createElement('option');
+                    option.value = model;
+                    option.textContent = model;
+                    modelSelect.appendChild(option);
+                }
+            });
+        }
+
+        getModelList();
+
+        class OBJViewer {
+            constructor() {
+                this.scene = null;
+                this.camera = null;
+                this.renderer = null;
+                this.mesh = null;
+                this.controls = null;
+                this.socket = null;
+                this.scale = 1;
+                this.paintMode = 'color';
+                
+                this.init();
+                this.setupSocket();
+                this.setupControls();
+                this.updateCamera();
+                this.animate();
+            }
+            
+            init() {
+                // Scene setup
+                this.scene = new THREE.Scene();
+                this.scene.background = new THREE.Color(0x2a2a2a);
+                
+                // Camera setup
+                this.camera = new THREE.PerspectiveCamera(
+                    75, 
+                    window.innerWidth / window.innerHeight, 
+                    0.1, 
+                    1000
+                );
+                this.camera.position.set(5, 5, 0);
+                
+                // Renderer setup
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.shadowMap.enabled = true;
+                this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+                
+                document.getElementById('container').appendChild(this.renderer.domElement);
+
+                // Lighting
+                const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+                this.scene.add(ambientLight);
+                
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(0, 0, 5);
+                directionalLight.castShadow = true;
+                this.scene.add(directionalLight);
+                
+                // Grid helper
+                const gridHelper = new THREE.GridHelper(5, 10);
+                gridHelper.material.opacity = 0.3;
+                gridHelper.material.transparent = true;
+                this.scene.add(gridHelper);
+                
+                // Load initial mesh
+                // this.loadMesh();
+            }
+            
+            setupSocket() {
+                this.socket = io();
+                
+                this.socket.on('connect', () => {
+                    this.updateConnectionStatus('Connected', '#00ff00');
+                });
+                
+                this.socket.on('disconnect', () => {
+                    this.updateConnectionStatus('Disconnected', '#ff4444');
+                });
+                
+                this.socket.on('mesh_updated', (data) => {
+                    this.updateMesh(data);
+                    this.updateReloadStatus('Mesh reloaded', '#00ff00');
+                });
+                
+                this.socket.on('code_updated', (data) => {
+                    // reload the page
+                    window.location.reload();
+                    console.log('Code changed: ', data.file);
+                    this.updateReloadStatus(`Code updated: ${data.file}`, '#ffaa00');
+                });
+
+                this.socket.on('model_list_updated', (data) => {
+                    getModelList();
+                });
+
+                setTimeout(() => {
+                    const currentModel = document.getElementById('model-select').value;
+                    const levelScalar = document.getElementById('level-scalar').value;
+                    console.log('Current model: ', currentModel);
+                    this.socket.emit('change_mesh', currentModel, levelScalar);
+                }, 100);
+
+                // Paint mode change
+                const paintSelect = document.getElementById('paint-select');
+                if (paintSelect) {
+                    paintSelect.addEventListener('change', (e) => {
+                        this.paintMode = e.target.value;
+                        if (this.mesh) {
+                            this.applyPaintMode(this.mesh.geometry);
+                        }
+                    });
+                }
+            }
+            
+            setupControls() {
+                let isMouseDown = false;
+                let mouseX = 0, mouseY = 0;
+                let rotationX = Math.PI/8, rotationY = -Math.PI/8;
+                let panX = 0, panY = 0;
+                let zoom = 5;
+                
+                this.renderer.domElement.addEventListener('mousedown', (e) => {
+                    isMouseDown = true;
+                    mouseX = e.clientX;
+                    mouseY = e.clientY;
+                });
+                
+                this.renderer.domElement.addEventListener('mousemove', (e) => {
+                    if (!isMouseDown) return;
+                    
+                    const deltaX = e.clientX - mouseX;
+                    const deltaY = e.clientY - mouseY;
+                    
+                    if (e.button === 0 && !e.ctrlKey) { // Left click - rotate
+                        rotationY -= deltaX * 0.01;
+                        rotationX += deltaY * 0.01;
+                        if (rotationX > Math.PI/2) {
+                            rotationX = Math.PI/2;
+                        }
+                        if (rotationX < 0) {
+                            rotationX = 0;
+                        }
+                    } else if (e.button === 0 && e.ctrlKey) { // Right click - pan
+                        panX -= deltaX * 0.01;
+                        panY += deltaY * 0.01;
+                    }
+                    
+                    mouseX = e.clientX;
+                    mouseY = e.clientY;
+                    
+                    this.updateCamera();
+                });
+                
+                this.renderer.domElement.addEventListener('mouseup', () => {
+                    isMouseDown = false;
+                });
+                
+                this.renderer.domElement.addEventListener('wheel', (e) => {
+                    zoom += e.deltaY * 0.01;
+                    zoom = Math.max(0.1, Math.min(20, zoom));
+                    this.updateCamera();
+                });
+                
+                this.renderer.domElement.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                });
+                
+                // Keyboard controls
+                document.addEventListener('keydown', (e) => {
+                    if (e.key === 'r' || e.key === 'R') {
+                        rotationX = rotationY = Math.PI/4;
+                        panX = panY = 0;
+                        zoom = 5;
+                        this.updateCamera();
+                    }
+                });
+                
+                this.updateCamera = () => {
+                    this.camera.position.x = Math.sin(rotationY) * Math.cos(rotationX) * zoom + panX;
+                    this.camera.position.y = Math.sin(rotationX) * zoom + panY;
+                    this.camera.position.z = Math.cos(rotationY) * Math.cos(rotationX) * zoom;
+                    this.camera.lookAt(panX, panY, 0);
+                };
+
+                document.getElementById('btn-rot-x').addEventListener('click', () => {
+                    if (this.mesh) {
+                        this.mesh.rotation.x += Math.PI/8;
+                        this.layOnPlate();
+                        this.updateCamera();
+                    }
+                });
+                document.getElementById('btn-rot-y').addEventListener('click', () => {
+                    if (this.mesh) {
+                        this.mesh.rotation.y += Math.PI/8;
+                        this.layOnPlate();
+                        this.updateCamera();
+                    }
+                });
+                document.getElementById('btn-rot-z').addEventListener('click', () => {
+                    if (this.mesh) {
+                        this.mesh.rotation.z += Math.PI/8;
+                        this.layOnPlate();
+                        this.updateCamera();
+                    }
+                });
+
+                document.getElementById('model-select').addEventListener('change', (e) => {
+                    this.currentModel = e.target.value;
+                    this.socket.emit('change_mesh', e.target.value, this.levelScalar);
+                });
+
+                document.getElementById('level-scalar').addEventListener('change', (e) => {
+                    this.levelScalar = e.target.value;
+                    this.currentModel = document.getElementById('model-select').value;
+                    this.socket.emit('change_mesh', this.currentModel, this.levelScalar);
+                });
+            }
+            
+            async loadMesh() {
+                try {
+                    this.updateMeshInfo('Loading mesh...', 'loading');
+                    
+                    const response = await fetch('/api/mesh');
+                    const data = await response.json();
+                    
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    this.updateMesh(data);
+                    this.updateMeshInfo(`Loaded: ${data.vertices.length/3} vertices`, 'success');
+                    
+                } catch (error) {
+                    console.error('Error loading mesh:', error);
+                    this.updateMeshInfo(`Error: ${error.message}`, 'error');
+                }
+            }
+            
+            updateMesh(data) {
+                // Remove existing mesh
+                if (this.mesh) {
+                    this.scene.remove(this.mesh);
+                }
+                
+                if (!data || !data.vertices) {
+                    console.error('Invalid mesh data');
+                    return;
+                }
+                
+                // Debug mesh data
+                console.log('Mesh data:', {
+                    vertices: data.vertices.length,
+                    normals: data.normals ? data.normals.length : 'none',
+                    firstVertex: data.vertices[0]
+                });
+                
+                // Create geometry
+                const geometry = new THREE.BufferGeometry();
+
+                // Since we're sending flattened vertices with sequential indices,
+                // we don't need to set an index buffer - just the position attribute
+                const vertices = new Float32Array(data.vertices);
+                geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+                
+                
+                // Add normals if available
+                if (data.normals && data.normals.length > 0) {
+                    const normals = new Float32Array(data.normals);
+                    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+                } else {
+                    geometry.computeVertexNormals();
+                }
+                
+                // Create material based on paint mode
+                const material = this.createMaterialForPaintMode(geometry);
+                
+                // Create mesh
+                this.mesh = new THREE.Mesh(geometry, material);
+                this.mesh.castShadow = true;
+                this.mesh.receiveShadow = true;
+                
+                // Center the mesh
+                geometry.computeBoundingBox();
+                const center = geometry.boundingBox.getCenter(new THREE.Vector3());
+                const bboxSize = new THREE.Vector3()
+                geometry.boundingBox.getSize(bboxSize);
+                this.scale = Math.max(bboxSize.x, bboxSize.y, bboxSize.z)/3
+                console.log('Scale: ', this.scale);
+                this.mesh.scale.set(1/this.scale, 1/this.scale, 1/this.scale);
+
+                this.layOnPlate();
+                this.scene.add(this.mesh);
+            }
+
+            // Apply the current paint mode to a geometry by updating its material/attributes
+            applyPaintMode(geometry) {
+                if (!this.mesh) return;
+                // Dispose old material to avoid leaks
+                if (this.mesh.material) {
+                    this.mesh.material.dispose();
+                }
+                this.mesh.material = this.createMaterialForPaintMode(geometry);
+                this.renderer.render(this.scene, this.camera);
+            }
+
+            // Create a material according to paint mode; for 'tri' assign per-triangle vertex colors
+            createMaterialForPaintMode(geometry) {
+                console.log('Paint mode: ', this.paintMode);
+
+                // Ensure normals exist when needed
+                if (!geometry.getAttribute('normal')) {
+                    geometry.computeVertexNormals();
+                }
+
+                if (this.paintMode === 'normal') {
+                    // Bake normals into RGB colors in [0,1] so it is unlit/constant
+                    const normalsAttr = geometry.getAttribute('normal');
+                    const vertexCount = normalsAttr ? normalsAttr.count : 0;
+                    const colors = new Float32Array(vertexCount * 3);
+                    for (let i = 0; i < vertexCount; i++) {
+                        const nx = normalsAttr.getX(i);
+                        const ny = normalsAttr.getY(i);
+                        const nz = normalsAttr.getZ(i);
+                        const base = i * 3;
+                        // Map [-1,1] -> [0,1]
+                        colors[base] = nx * 0.5 + 0.5;
+                        colors[base + 1] = ny * 0.5 + 0.5;
+                        colors[base + 2] = nz * 0.5 + 0.5;
+                    }
+                    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                    // Unlit material, ignores lights and stays constant regardless of lighting
+                    return new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.FrontSide });
+                }
+
+                if (this.paintMode === 'tri') {
+                    const pos = geometry.getAttribute('position');
+                    const vertexCount = pos ? pos.count : 0;
+                    const colors = new Float32Array(vertexCount * 3);
+                    // Assign a single random color per triangle (3 consecutive vertices)
+                    for (let i = 0; i < vertexCount; i += 3) {
+                        const r = Math.random() * 0.8 + 0.2;
+                        const g = Math.random() * 0.8 + 0.2;
+                        const b = Math.random() * 0.8 + 0.2;
+                        for (let j = 0; j < 3; j++) {
+                            const base = (i + j) * 3;
+                            colors[base] = r;
+                            colors[base + 1] = g;
+                            colors[base + 2] = b;
+                        }
+                    }
+                    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                    // Unlit vertex color material
+                    return new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.FrontSide });
+                }
+
+                // Default 'color' mode: remove color attribute and use lit material
+                if (geometry.getAttribute('color')) {
+                    geometry.deleteAttribute('color');
+                }
+                return new THREE.MeshLambertMaterial({ color: 0x8888ff, side: THREE.FrontSide });
+            }
+
+            layOnPlate() {
+                if (this.mesh) {
+                    // lay the bottom of the mesh on the plate, considering mesh scale and position
+                    const bboxSize = new THREE.Vector3()
+                    this.mesh.geometry.boundingBox.getSize(bboxSize);
+                    const center = this.mesh.geometry.boundingBox.getCenter(new THREE.Vector3());
+                    const bottom = (-center.y + bboxSize.y/2)/this.scale
+                    this.mesh.position.set(-center.x/this.scale, bottom, -center.z/this.scale);
+                }
+            }
+            
+            updateMeshInfo(text, type = '') {
+                const element = document.getElementById('mesh-info');
+                element.textContent = text;
+                element.className = type;
+            }
+            
+            updateConnectionStatus(text, color) {
+                const element = document.getElementById('connection-status');
+                element.textContent = text;
+                element.style.color = color;
+            }
+            
+            updateReloadStatus(text, color) {
+                const element = document.getElementById('reload-status');
+                element.textContent = text;
+                element.style.color = color;
+                
+                // Clear status after 3 seconds
+                setTimeout(() => {
+                    element.textContent = '';
+                }, 3000);
+            }
+            
+            animate() {
+                // Throttle animation to 30 FPS for debugging
+                setTimeout(() => this.animate(), 1000 / 30);
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            if (viewer) {
+                viewer.camera.aspect = window.innerWidth / window.innerHeight;
+                viewer.camera.updateProjectionMatrix();
+                viewer.renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+        });
+
+        getModelList();
+        
+        // Initialize viewer
+        const viewer = new OBJViewer();
+    </script>
+</body>
+</html>
