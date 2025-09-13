@@ -1,6 +1,9 @@
 # Mesh Viewer
 
-A simple Flask-based web application for real-time 3D viewing of OBJ files.
+A simple Flask-based web application for real-time 3D viewing of OBJ files, with a marchingCubes demo included.
+
+<img width="1144" height="859" alt="image" src="https://github.com/user-attachments/assets/c0eb7137-6880-4e94-ba0c-041461c2f521" />
+
 
 ## Quick Start
 
@@ -30,4 +33,5 @@ A simple Flask-based web application for real-time 3D viewing of OBJ files.
 - **Backend**: Flask + SocketIO + Trimesh + libigl
 - **Frontend**: Three.js (same concepts as your web dev experience)
 - **File watching**: Simple polling (no external dependencies)
+
 
